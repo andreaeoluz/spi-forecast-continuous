@@ -2,10 +2,11 @@
 
 import pickle
 import sys
+import warnings
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Optional
 from scipy.stats import gamma, norm
 
 # Some existing spi_scale_*.pkl caches on disk were written under numpy>=2.0
@@ -30,25 +31,63 @@ for _submodule in ("numeric", "multiarray", "umath", "numerictypes"):
     sys.modules.setdefault(f"numpy._core.{_submodule}", getattr(np.core, _submodule))
 
 
+def build_fit_mask(years: np.ndarray, months: np.ndarray, fit_end: str) -> np.ndarray:
+    """Boolean (T,) mask selecting the timesteps up to and including fit_end.
+
+    Args:
+        years: Calendar year for each timestep (T,).
+        months: Calendar month (1-12) for each timestep (T,).
+        fit_end: Last month of the fitting period, as "YYYY-MM"
+            (normally SplitConfig.train_gs[1]).
+    """
+    end_y, end_m = map(int, fit_end.split("-"))
+    ym = np.asarray(years) * 12 + (np.asarray(months) - 1)
+    return ym <= end_y * 12 + (end_m - 1)
+
+
 def compute_spi(
     precipitation: np.ndarray,
     months: np.ndarray,
     scale: int = 3,
     min_samples: int = 30,
+    fit_mask: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute SPI using a rolling accumulation window.
+
+    The distribution parameters (zero probability, Gamma shape/scale, and the
+    mean/std of the empirical fallback) are estimated only on the timesteps
+    selected by fit_mask, then applied to every timestep. Passing the training
+    period as fit_mask keeps validation/test precipitation out of the index
+    definition, so the SPI used to evaluate the future never depends on the
+    future.
 
     Args:
         precipitation: Precipitation series (T, H, W).
         months: Calendar month (1-12) for each timestep (T,).
         scale: Accumulation window length, in months.
-        min_samples: Minimum number of samples required to fit a
+        min_samples: Minimum number of fitting samples required to fit a
             distribution for a given calendar month / pixel.
+        fit_mask: Boolean (T,) mask of the timesteps used to fit the
+            distributions (see build_fit_mask). None fits on the whole series,
+            which leaks validation/test statistics into the index and is kept
+            only for backward compatibility.
 
     Returns:
         (spi, delta_spi): SPI values and month-to-month SPI change.
     """
     T, H, W = precipitation.shape
+
+    if fit_mask is None:
+        warnings.warn(
+            "compute_spi called without fit_mask: SPI distributions are fitted "
+            "on the whole series, including validation/test months.",
+            stacklevel=2,
+        )
+        fit_mask = np.ones(T, dtype=bool)
+    else:
+        fit_mask = np.asarray(fit_mask, dtype=bool)
+        if fit_mask.shape != (T,):
+            raise ValueError(f"fit_mask must have shape ({T},), got {fit_mask.shape}")
 
     print(f"\n  Calculating rolling sum (scale={scale})...")
 
@@ -58,7 +97,13 @@ def compute_spi(
         for j in range(W):
             series = precipitation[:, i, j]
             series_pd = pd.Series(series)
-            acc_pd = series_pd.rolling(window=scale, min_periods=1).sum()
+            # min_periods=scale: the first scale-1 months (and any window
+            # with a missing month) have no complete accumulation and stay
+            # NaN. With min_periods=1 they held 1- or 2-month partial sums,
+            # scored against the 3-month distribution of their calendar
+            # month, which produced a spurious region-wide "extreme drought"
+            # at the start of the record (e.g. Jan/1980 mean SPI ~ -3 in Sul).
+            acc_pd = series_pd.rolling(window=scale, min_periods=scale).sum()
             acc[:, i, j] = acc_pd.values.astype(np.float32)
             acc[np.isnan(precipitation[:, i, j]), i, j] = np.nan
 
@@ -71,11 +116,12 @@ def compute_spi(
     for month in range(1, 13):
         month_mask = (months == month)
         month_indices = np.where(month_mask)[0]
+        fit_indices = np.where(month_mask & fit_mask)[0]
 
-        if len(month_indices) < min_samples:
+        if len(fit_indices) < min_samples:
             continue
 
-        acc_month = acc[month_indices]
+        acc_month = acc[fit_indices]
 
         for i in range(H):
             for j in range(W):
@@ -199,8 +245,13 @@ def save_spi_cache(
     months: np.ndarray,
     cache_dir: Path,
     stats: Dict = None,
+    fit_period: Optional[Tuple[str, str]] = None,
 ) -> Path:
-    """Save SPI results to a pickle cache."""
+    """Save SPI results to a pickle cache.
+
+    fit_period records the ("YYYY-MM", "YYYY-MM") range the distributions were
+    fitted on, so a cache can be told apart from the older full-period ones.
+    """
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / f"spi_scale_{scale}.pkl"
 
@@ -209,6 +260,7 @@ def save_spi_cache(
         "delta_spi": delta_spi.astype(np.float32),
         "scale": scale,
         "months": months,
+        "fit_period": fit_period,
     }
 
     if stats:

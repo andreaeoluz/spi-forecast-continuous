@@ -33,7 +33,13 @@ def load_region_timeseries(
     factor_h, factor_w = config.get_downsample(region)
 
     region_path = base_path / region
-    files = sorted(region_path.glob(f"{region}_*.tif"))
+    # Sort chronologically by the (year, month) parsed from the file name,
+    # not lexicographically: a non-zero-padded month ("_1980_10" before
+    # "_1980_2") would otherwise silently scramble the time axis.
+    files = sorted(
+        region_path.glob(f"{region}_*.tif"),
+        key=lambda f: (int(f.stem.split("_")[-2]), int(f.stem.split("_")[-1])),
+    )
 
     if not files:
         raise FileNotFoundError(f"No files found in {region_path}")
@@ -85,6 +91,16 @@ def load_region_timeseries(
         years.append(year)
         months.append(month)
 
+    # Every temporal index in the pipeline assumes consecutive months.
+    ym = np.array(years) * 12 + np.array(months) - 1
+    gaps = np.where(np.diff(ym) != 1)[0]
+    if len(gaps) > 0:
+        i = gaps[0]
+        raise ValueError(
+            f"Non-consecutive monthly rasters in {region_path}: "
+            f"{years[i]}-{months[i]:02d} is followed by {years[i + 1]}-{months[i + 1]:02d}"
+        )
+
     data_stack = np.stack(data_list, axis=0)
 
     print("\n📊 Data loaded:")
@@ -94,7 +110,14 @@ def load_region_timeseries(
     print(f"   Width: {data_stack.shape[2]}")
     print(f"   Bands: {data_stack.shape[3]}")
 
-    valid_mask = build_valid_mask(data_stack, min_valid_ratio=config.data.min_valid_ratio)
+    # The mask is derived from the training period only (train_gs) and then
+    # frozen for validation and test, so no evaluation-period data enters
+    # this preprocessing decision. (In this dataset each pixel is either
+    # finite in every month or almost never, so the result is identical to
+    # a full-record mask; restricting it keeps the protocol leakage-free.)
+    train_end = config.split.ym_to_int(config.split.train_gs[1])
+    train_idx = ym <= train_end
+    valid_mask = build_valid_mask(data_stack[train_idx], min_valid_ratio=config.data.min_valid_ratio)
 
     total_pixels = valid_mask.size
     valid_pixels = valid_mask.sum()

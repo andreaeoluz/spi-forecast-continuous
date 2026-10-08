@@ -154,6 +154,11 @@ class TrainingConfig:
     progressive_unfreeze_epoch_gap: int = 5
     layer_lr_decay: float = 0.7
 
+    # Linear 0.5 -> 1.0 scaling of the input window (data.temporal_input_weights).
+    # Read by every predictor dataset AND by inference, so train and test
+    # inputs are always scaled the same way.
+    temporal_decay: bool = False
+
 
 @dataclass
 class LossConfig:
@@ -277,10 +282,15 @@ class ExperimentConfig:
         """Return detailed downsampling information for a region."""
         ds_h, ds_w = self.get_downsample(region)
 
+        # Share of spatially connected extreme-drought events (8-connected
+        # SPI-3 <= -2.0 components per month, SPI computed after aggregation)
+        # retained relative to native resolution, measured on the training
+        # period only (1980-2019), pooled over the five regions (regional range).
         preservation = {
-            (2, 2): "~85% of events preserved",
-            (3, 3): "~56% of events preserved",
-            (4, 4): "~35% of events preserved",
+            (2, 2): "~49% of extreme events preserved (38-65% by region, training period)",
+            (3, 3): "~40% of extreme events preserved (33-55% by region, training period)",
+            (4, 4): "~36% of extreme events preserved (28-51% by region, training period)",
+            (5, 5): "~33% of extreme events preserved (25-51% by region, training period)",
         }.get((ds_h, ds_w), "unknown")
 
         return {

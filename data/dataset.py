@@ -16,6 +16,18 @@ from typing import Optional, Dict, Any, List
 from .preprocessing import build_temporal_valid_mask
 
 
+def temporal_input_weights(p: int) -> torch.Tensor:
+    """Linear 0.5 -> 1.0 weights over a p-step input window, shape (p, 1, 1, 1).
+
+    Single source of truth for the optional input temporal decay: the
+    datasets (training/validation) and the inference path must scale the
+    window identically, or the model is evaluated on inputs it never saw.
+    The last step is weighted exactly 1.0, so the persistence anchor read
+    from it is never attenuated.
+    """
+    return torch.linspace(0.5, 1.0, steps=p).view(p, 1, 1, 1)
+
+
 class ClimateDataset(Dataset):
     """
     Dataset for autoencoder pretraining or continuous SPI regression.
@@ -46,7 +58,7 @@ class ClimateDataset(Dataset):
         p: int,
         q: int,
         valid_mask: Optional[np.ndarray] = None,
-        temporal_decay: bool = True,
+        temporal_decay: bool = False,
         mode: str = "regression",
         seed: int = 42,
         verbose: bool = True,
@@ -64,7 +76,9 @@ class ClimateDataset(Dataset):
             p: History length (input timesteps).
             q: Forecast horizon (timesteps ahead) - regression only.
             valid_mask: Validity mask (H, W).
-            temporal_decay: If True, apply a linear temporal decay to the input.
+            temporal_decay: If True, scale the input window by
+                temporal_input_weights(p). Must match what inference does
+                (see ExperimentConfig.training.temporal_decay).
             mode: 'autoencoder' or 'regression'.
             seed: Random seed for reproducibility.
             verbose: If True, print dataset information.
@@ -156,11 +170,8 @@ class ClimateDataset(Dataset):
         # Channels-first layout for PyTorch.
         self.data_ch = np.transpose(self.data_for_training, (0, 3, 1, 2))
 
-        # Linear temporal decay applied to the input sequence.
-        if temporal_decay:
-            self.temporal_weights = torch.linspace(0.5, 1.0, steps=p).view(p, 1, 1, 1)
-        else:
-            self.temporal_weights = None
+        # Optional linear temporal decay applied to the input sequence.
+        self.temporal_weights = temporal_input_weights(p) if temporal_decay else None
 
         if verbose:
             print(f"  ✅ Dataset initialized with {len(self.indices)} samples")

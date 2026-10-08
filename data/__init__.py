@@ -9,8 +9,8 @@ from .preprocessing import (
     validate_data_integrity,
 )
 from .preprocessing import ClimateNormalizer
-from .dataset import ClimateDataset
-from .spi import compute_spi, load_spi_cache, save_spi_cache, analyze_spi_statistics
+from .dataset import ClimateDataset, temporal_input_weights
+from .spi import compute_spi, build_fit_mask, load_spi_cache, save_spi_cache, analyze_spi_statistics
 
 __all__ = [
     "load_region_timeseries",
@@ -21,7 +21,9 @@ __all__ = [
     "validate_data_integrity",
     "ClimateNormalizer",
     "ClimateDataset",
+    "temporal_input_weights",
     "compute_spi",
+    "build_fit_mask",
     "load_spi_cache",
     "save_spi_cache",
     "analyze_spi_statistics",

@@ -144,8 +144,16 @@ def main(region: str = None):
 
     logger.info("\n📊 Normalizing data...")
 
+    # Fit on the WHOLE training period (1980 to train_end), not only on the
+    # autoencoder's internal 80% split. This normalizer is reused by every
+    # transfer-learning predictor, while scratch predictors fit their own on
+    # the same training period (GridSearch.load_data); fitting both on the
+    # same months keeps TL and scratch inputs identically normalized, so the
+    # TL-vs-scratch comparison is not confounded by normalization. Still
+    # leakage-free: every month used here belongs to the training period.
     normalizer = ClimateNormalizer(config.data.bands)
-    data_train_norm = normalizer.fit_transform(data_train, months_train, out["valid_mask"])
+    normalizer.fit(data_trainval, months_trainval, out["valid_mask"])
+    data_train_norm = normalizer.transform(data_train, months_train, out["valid_mask"])
     data_val_norm = normalizer.transform(data_val, months_val, out["valid_mask"])
 
     normalizer.save(normalizer_path)

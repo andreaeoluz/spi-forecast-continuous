@@ -17,7 +17,7 @@ import numpy as np
 from typing import Dict, Any
 
 from config import ExperimentConfig, get_paths, get_data_path
-from data import load_region_timeseries, compute_spi, save_spi_cache, analyze_spi_statistics
+from data import load_region_timeseries, compute_spi, build_fit_mask, save_spi_cache, analyze_spi_statistics
 from utils import set_reproducible_seeds
 from utils.logger import Logger, Colors
 
@@ -122,13 +122,21 @@ def main(region: str = None) -> None:
 
     validate_mask(out["valid_mask"], precipitation, logger)
 
+    # Fit the SPI distributions on the training period only, so that
+    # validation/test precipitation never enters the index definition.
+    fit_period = (f"{out['years'][0]}-{out['months'][0]:02d}", config.split.train_gs[1])
+    fit_mask = build_fit_mask(out["years"], out["months"], config.split.train_gs[1])
+
     logger.info(f"\n🔄 Computing SPI (scale={config.spi.scale})...")
+    logger.info(f"   Distribution fit period: {fit_period[0]} to {fit_period[1]} "
+                f"({int(fit_mask.sum())} of {T} timesteps)")
 
     spi, delta_spi = compute_spi(
         precipitation=precipitation,
         months=out["months"],
         scale=config.spi.scale,
         min_samples=config.spi.min_samples,
+        fit_mask=fit_mask,
     )
 
     if out["valid_mask"] is not None:
@@ -169,6 +177,7 @@ def main(region: str = None) -> None:
         months=out["months"],
         cache_dir=paths["spi_cache_dir"],
         stats=stats,
+        fit_period=fit_period,
     )
 
     logger.header("✅ SPI PRECOMPUTATION COMPLETED")

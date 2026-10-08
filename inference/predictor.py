@@ -17,7 +17,7 @@ import json
 
 from config import ExperimentConfig
 from config.paths import get_paths
-from data import load_region_timeseries, ClimateNormalizer, load_spi_cache
+from data import load_region_timeseries, ClimateNormalizer, load_spi_cache, temporal_input_weights
 from models import SPIPredictor
 from evaluation.metrics import compute_regression_metrics
 from utils import set_reproducible_seeds
@@ -279,8 +279,11 @@ class InferencePredictor:
 
     def _get_sample_indices(self, data_len: int) -> List[int]:
         """Get valid sample indices for a data subset."""
+        # p + q months hold exactly one window (input 0..p-1, target p+q-1),
+        # so only strictly fewer months leave no sample. The previous `<=`
+        # dropped that single window, e.g. p=q=12 on the 24-month test period.
         min_required = self.p + self.q
-        if data_len <= min_required:
+        if data_len < min_required:
             return []
         # target_idx = t + q - 1, so the last usable t is data_len - q.
         return list(range(self.p, data_len - self.q + 1))
@@ -317,6 +320,11 @@ class InferencePredictor:
         if self.valid_mask is not None:
             mask_tensor = torch.from_numpy(self.valid_mask.astype(np.float32)).to(self.config.device)
 
+        # Same input scaling as training (ClimateDataset): without this, a
+        # model trained with temporal_decay=True is evaluated on inputs it
+        # never saw.
+        decay = temporal_input_weights(self.p).numpy() if self.config.training.temporal_decay else None
+
         with torch.no_grad():
             for t in indices:
                 # Matches ClimateDataset's convention: window is
@@ -324,6 +332,8 @@ class InferencePredictor:
                 # after that window, i.e. SPI_{(t-p)+p+q-1} = SPI_{t+q-1}.
                 target_idx = t + self.q - 1
                 x_seq = data_ch[t - self.p:t]
+                if decay is not None:
+                    x_seq = x_seq * decay
                 x_tensor = torch.from_numpy(x_seq).float().unsqueeze(0).to(self.config.device)
                 pred, _ = self.model(x_tensor, mask=mask_tensor)
                 pred_np = pred.cpu().numpy()[0, 0]

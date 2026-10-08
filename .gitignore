@@ -7,6 +7,8 @@ __pycache__/
 # results, inference rasters) - reproducible by running main.py, and can
 # be many GB; never commit them.
 outputs/
+*.log
+*.pth
 
 # LaTeX build artifacts
 Paper.Regression/*.aux
